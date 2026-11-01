@@ -2,6 +2,7 @@
 import sys
 import json
 import xml.etree.ElementTree as ET
+import yaml
 
 
 class InputFileError(Exception):
@@ -18,6 +19,41 @@ class Device:
         self.os_version = os_version
         self.owner = owner
         self.statuses = statuses
+
+    def has_owner(self):
+        """Return True if the owner is not missing or empty."""
+        # no owner element at all
+        if self.owner is None:
+            return False
+        # strip() removes spaces, so an owner with only spaces counts as empty
+        return self.owner.strip() != ""
+
+    def count_down(self):
+        """Count the interfaces that are down."""
+        # count() tells how many times "down" is in the list
+        return self.statuses.count("down")
+
+
+def version_to_list(text):
+    """Turn a version like 15.10 into a list of numbers [15, 10]."""
+    numbers = []
+    # split the text at the dots, then turn each part into a number
+    for part in text.split("."):
+        numbers.append(int(part))
+    return numbers
+
+
+def is_older(found, required):
+    """Return True if the found version is lower than the required one."""
+    a = version_to_list(found)
+    b = version_to_list(required)
+    # add zeros to the shorter list so 9.1.0 equals 9.1
+    while len(a) < len(b):
+        a.append(0)
+    while len(b) < len(a):
+        b.append(0)
+    # python compares lists number by number, so [15, 10] is bigger than [15, 2]
+    return a < b
 
 
 def load_inventory(path):
@@ -61,11 +97,64 @@ def load_inventory(path):
     return site, devices, skipped
 
 
-def build_report(site, devices, skipped):
-    """Count everything and return the report dictionary."""
+def load_policy(path):
+    """Read the YAML file and return the policy as a dictionary."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            # safe_load only reads data, load could run code
+            policy = yaml.safe_load(f)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
+        raise InputFileError("Cannot read policy file " + path + ": " + str(error))
+
+    # an empty file gives None, which just means no checks
+    if policy is None:
+        return {}
+    # the policy has to be a mapping (a dictionary)
+    if not isinstance(policy, dict):
+        raise InputFileError("Policy file " + path + " is not a mapping")
+    return policy
+
+
+def check_device(device, policy):
+    """Return a list of the violations of one device."""
+    violations = []
+
+    # if min_os is not in the policy, the role and version checks are off
+    min_os = policy.get("min_os")
+    if isinstance(min_os, dict):
+        # the role is not in min_os, so it is not allowed
+        if device.role not in min_os:
+            violations.append({"device": device.dev_id, "type": "unknown_role", "role": device.role})
+        elif device.os_version is not None:
+            # the role is allowed, so check the version
+            # str() in case the version loaded as a number
+            required = str(min_os[device.role])
+            if is_older(device.os_version, required):
+                violations.append({"device": device.dev_id, "type": "os_outdated",
+                                   "found": device.os_version, "required": required})
+
+    # the owner check only runs if require_owner is true
+    if policy.get("require_owner") is True:
+        if not device.has_owner():
+            violations.append({"device": device.dev_id, "type": "missing_owner"})
+
+    # check for None instead of "if limit" because 0 is a real limit
+    limit = policy.get("max_down_interfaces")
+    if limit is not None:
+        down = device.count_down()
+        # more down interfaces than allowed
+        if down > limit:
+            violations.append({"device": device.dev_id, "type": "too_many_down", "down": down})
+
+    return violations
+
+
+def build_report(site, devices, skipped, policy):
+    """Count everything, check every device and return the report dictionary."""
     # these will hold the totals
     roles = {}
     interfaces = {"up": 0, "down": 0, "other": 0}
+    violations = []
     compliant = []
 
     for device in devices:
@@ -81,8 +170,12 @@ def build_report(site, devices, skipped):
             else:
                 interfaces["other"] += 1
 
-        # no checks yet, so every device counts as compliant
-        compliant.append(device.dev_id)
+        # check the device and keep its violations
+        problems = check_device(device, policy)
+        violations.extend(problems)
+        # a device with no problems is compliant
+        if len(problems) == 0:
+            compliant.append(device.dev_id)
 
     # the report wants the ids in sorted order
     compliant.sort()
@@ -92,7 +185,7 @@ def build_report(site, devices, skipped):
         "skipped_devices": skipped,
         "roles": roles,
         "interfaces": interfaces,
-        "violations": [],
+        "violations": violations,
         "compliant": compliant,
     }
 
@@ -105,20 +198,22 @@ def main(args):
         return 2
 
     try:
-        # read the inventory, a bad file raises my InputFileError
+        # read both files, a bad file raises my InputFileError
         site, devices, skipped = load_inventory(args[1])
+        policy = load_policy(args[2])
     except InputFileError as error:
         # show the message without a traceback and exit with code 1
         print("Error:", error)
         return 1
 
-    report = build_report(site, devices, skipped)
+    report = build_report(site, devices, skipped, policy)
     # write the report to audit.json
     with open("audit.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
     # short summary on screen
     print("Devices:", report["total_devices"], "Skipped:", report["skipped_devices"])
+    print("Violations:", len(report["violations"]), "Compliant:", len(report["compliant"]))
     return 0
 
 
