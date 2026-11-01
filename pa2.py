@@ -20,6 +20,14 @@ class Device:
         self.owner = owner
         self.statuses = statuses
 
+    def has_owner(self):
+        """Return True if the owner is not missing or empty."""
+        # no owner element at all
+        if self.owner is None:
+            return False
+        # strip() removes spaces, so an owner with only spaces counts as empty
+        return self.owner.strip() != ""
+
 
 def load_inventory(path):
     """Read the XML file. Return the site, the list of devices and the skipped count."""
@@ -90,6 +98,11 @@ def check_device(device, policy):
         # the role is not in min_os, so it is not allowed
         if device.role not in min_os:
             violations.append({"device": device.dev_id, "type": "unknown_role", "role": device.role})
+
+    # the owner check only runs if require_owner is true
+    if policy.get("require_owner") is True:
+        if not device.has_owner():
+            violations.append({"device": device.dev_id, "type": "missing_owner"})
 
     return violations
 
