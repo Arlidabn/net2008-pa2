@@ -1,5 +1,6 @@
 # Name: Alex Wang  Student ID: 101377606
 import sys
+import json
 import xml.etree.ElementTree as ET
 
 
@@ -60,6 +61,42 @@ def load_inventory(path):
     return site, devices, skipped
 
 
+def build_report(site, devices, skipped):
+    """Count everything and return the report dictionary."""
+    # these will hold the totals
+    roles = {}
+    interfaces = {"up": 0, "down": 0, "other": 0}
+    compliant = []
+
+    for device in devices:
+        # add 1 to this role (get gives 0 the first time we see it)
+        roles[device.role] = roles.get(device.role, 0) + 1
+
+        # count the interfaces, anything that is not up or down goes in other
+        for status in device.statuses:
+            if status == "up":
+                interfaces["up"] += 1
+            elif status == "down":
+                interfaces["down"] += 1
+            else:
+                interfaces["other"] += 1
+
+        # no checks yet, so every device counts as compliant
+        compliant.append(device.dev_id)
+
+    # the report wants the ids in sorted order
+    compliant.sort()
+    return {
+        "site": site,
+        "total_devices": len(devices),
+        "skipped_devices": skipped,
+        "roles": roles,
+        "interfaces": interfaces,
+        "violations": [],
+        "compliant": compliant,
+    }
+
+
 def main(args):
     """Run the program and return the exit code."""
     # args[0] is pa2.py, so exactly two arguments means length 3
@@ -75,10 +112,13 @@ def main(args):
         print("Error:", error)
         return 1
 
-    # for now just print the device ids
-    for device in devices:
-        print(device.dev_id)
-    print("Skipped:", skipped)
+    report = build_report(site, devices, skipped)
+    # write the report to audit.json
+    with open("audit.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
+    # short summary on screen
+    print("Devices:", report["total_devices"], "Skipped:", report["skipped_devices"])
     return 0
 
 
