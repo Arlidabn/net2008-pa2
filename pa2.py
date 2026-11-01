@@ -34,6 +34,28 @@ class Device:
         return self.statuses.count("down")
 
 
+def version_to_list(text):
+    """Turn a version like 15.10 into a list of numbers [15, 10]."""
+    numbers = []
+    # split the text at the dots, then turn each part into a number
+    for part in text.split("."):
+        numbers.append(int(part))
+    return numbers
+
+
+def is_older(found, required):
+    """Return True if the found version is lower than the required one."""
+    a = version_to_list(found)
+    b = version_to_list(required)
+    # add zeros to the shorter list so 9.1.0 equals 9.1
+    while len(a) < len(b):
+        a.append(0)
+    while len(b) < len(a):
+        b.append(0)
+    # python compares lists number by number, so [15, 10] is bigger than [15, 2]
+    return a < b
+
+
 def load_inventory(path):
     """Read the XML file. Return the site, the list of devices and the skipped count."""
     try:
@@ -103,6 +125,13 @@ def check_device(device, policy):
         # the role is not in min_os, so it is not allowed
         if device.role not in min_os:
             violations.append({"device": device.dev_id, "type": "unknown_role", "role": device.role})
+        elif device.os_version is not None:
+            # the role is allowed, so check the version
+            # str() in case the version loaded as a number
+            required = str(min_os[device.role])
+            if is_older(device.os_version, required):
+                violations.append({"device": device.dev_id, "type": "os_outdated",
+                                   "found": device.os_version, "required": required})
 
     # the owner check only runs if require_owner is true
     if policy.get("require_owner") is True:
