@@ -28,6 +28,11 @@ class Device:
         # strip() removes spaces, so an owner with only spaces counts as empty
         return self.owner.strip() != ""
 
+    def count_down(self):
+        """Count the interfaces that are down."""
+        # count() tells how many times "down" is in the list
+        return self.statuses.count("down")
+
 
 def load_inventory(path):
     """Read the XML file. Return the site, the list of devices and the skipped count."""
@@ -103,6 +108,14 @@ def check_device(device, policy):
     if policy.get("require_owner") is True:
         if not device.has_owner():
             violations.append({"device": device.dev_id, "type": "missing_owner"})
+
+    # check for None instead of "if limit" because 0 is a real limit
+    limit = policy.get("max_down_interfaces")
+    if limit is not None:
+        down = device.count_down()
+        # more down interfaces than allowed
+        if down > limit:
+            violations.append({"device": device.dev_id, "type": "too_many_down", "down": down})
 
     return violations
 
