@@ -2,6 +2,7 @@
 import sys
 import json
 import xml.etree.ElementTree as ET
+import yaml
 
 
 class InputFileError(Exception):
@@ -61,11 +62,44 @@ def load_inventory(path):
     return site, devices, skipped
 
 
-def build_report(site, devices, skipped):
-    """Count everything and return the report dictionary."""
+def load_policy(path):
+    """Read the YAML file and return the policy as a dictionary."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            # safe_load only reads data, load could run code
+            policy = yaml.safe_load(f)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
+        raise InputFileError("Cannot read policy file " + path + ": " + str(error))
+
+    # an empty file gives None, which just means no checks
+    if policy is None:
+        return {}
+    # the policy has to be a mapping (a dictionary)
+    if not isinstance(policy, dict):
+        raise InputFileError("Policy file " + path + " is not a mapping")
+    return policy
+
+
+def check_device(device, policy):
+    """Return a list of the violations of one device."""
+    violations = []
+
+    # if min_os is not in the policy, the role and version checks are off
+    min_os = policy.get("min_os")
+    if isinstance(min_os, dict):
+        # the role is not in min_os, so it is not allowed
+        if device.role not in min_os:
+            violations.append({"device": device.dev_id, "type": "unknown_role", "role": device.role})
+
+    return violations
+
+
+def build_report(site, devices, skipped, policy):
+    """Count everything, check every device and return the report dictionary."""
     # these will hold the totals
     roles = {}
     interfaces = {"up": 0, "down": 0, "other": 0}
+    violations = []
     compliant = []
 
     for device in devices:
@@ -81,8 +115,12 @@ def build_report(site, devices, skipped):
             else:
                 interfaces["other"] += 1
 
-        # no checks yet, so every device counts as compliant
-        compliant.append(device.dev_id)
+        # check the device and keep its violations
+        problems = check_device(device, policy)
+        violations.extend(problems)
+        # a device with no problems is compliant
+        if len(problems) == 0:
+            compliant.append(device.dev_id)
 
     # the report wants the ids in sorted order
     compliant.sort()
@@ -92,7 +130,7 @@ def build_report(site, devices, skipped):
         "skipped_devices": skipped,
         "roles": roles,
         "interfaces": interfaces,
-        "violations": [],
+        "violations": violations,
         "compliant": compliant,
     }
 
@@ -105,20 +143,22 @@ def main(args):
         return 2
 
     try:
-        # read the inventory, a bad file raises my InputFileError
+        # read both files, a bad file raises my InputFileError
         site, devices, skipped = load_inventory(args[1])
+        policy = load_policy(args[2])
     except InputFileError as error:
         # show the message without a traceback and exit with code 1
         print("Error:", error)
         return 1
 
-    report = build_report(site, devices, skipped)
+    report = build_report(site, devices, skipped, policy)
     # write the report to audit.json
     with open("audit.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
     # short summary on screen
     print("Devices:", report["total_devices"], "Skipped:", report["skipped_devices"])
+    print("Violations:", len(report["violations"]), "Compliant:", len(report["compliant"]))
     return 0
 
 
